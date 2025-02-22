@@ -61,7 +61,14 @@ class TradingBot:
         self.min_usdt_reserve = 10  # Keep minimum 10 USDT as reserve
         self.max_usdt_per_trade = 100  # Maximum USDT to use per trade
         self.usdt_position_pct = 0.2  # Use 20% of available USDT per trade
+        self.MIN_PI_ORDER = 1.0  # Set to 1 PI minimum
+        self.MIN_USDT_ORDER = 5.0  # Set to 5 USDT minimum
 
+        # Also increase the minimum USDT reserve to ensure we have enough for fees
+        self.min_usdt_reserve = 15  # Increased from 10
+
+        # Adjust USDT position percentage to ensure larger orders
+        self.usdt_position_pct = 0.5  # Increased from 0.2 to use 50% of available USDT
 
         # Personality messages
         self.profit_messages = [
@@ -100,19 +107,25 @@ class TradingBot:
             return 0
 
     async def send_telegram_message(self, message, is_important=False):
-        """Send formatted message via Telegram"""
+        """
+        Send formatted message via Telegram
+
+        Args:
+            message (str): The message to send
+            is_important (bool): Whether to mark the message as important with special formatting
+        """
         try:
             if self.app and self.chat_id:
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                formatted_message = f"⏰ {timestamp}\n{message}"
 
                 if is_important:
-                    formatted_message = f"🔔 IMPORTANT UPDATE 🔔\n{formatted_message}"
+                    formatted_message = f"🔔 IMPORTANT UPDATE 🔔\n⏰ {timestamp}\n{message}"
+                else:
+                    formatted_message = f"⏰ {timestamp}\n{message}"
 
                 await self.app.bot.send_message(
                     chat_id=self.chat_id,
-                    text=formatted_message,
-                    parse_mode='HTML'
+                    text=formatted_message
                 )
         except Exception as e:
             logger.error(f"Error sending Telegram message: {str(e)}")
@@ -163,20 +176,38 @@ class TradingBot:
             balances = await self.get_balances()
             usdt_available = balances['USDT'] - self.min_usdt_reserve
 
-            if usdt_available <= 0:
+            logger.info(f"Calculating buy - Available USDT: {usdt_available}, Current price: {current_price}")
+
+            if usdt_available <= self.MIN_USDT_ORDER:
+                logger.info(f"Insufficient USDT. Available: {usdt_available}, Minimum needed: {self.MIN_USDT_ORDER}")
                 return 0
 
-            # Calculate USDT to use for this trade
-            usdt_to_use = min(
+            # Always try to use at least MIN_USDT_ORDER worth of USDT
+            usdt_to_use = max(
                 usdt_available * self.usdt_position_pct,
-                self.max_usdt_per_trade
+                self.MIN_USDT_ORDER * 2  # Double the minimum to ensure we clear requirements
             )
 
-            # Calculate PI amount we can buy
+            # Cap at max trade size
+            usdt_to_use = min(usdt_to_use, self.max_usdt_per_trade)
+
+            # Calculate PI amount
             pi_amount = usdt_to_use / current_price
 
-            # Round to 2 decimal places for better order accuracy
-            return round(pi_amount, 2)
+            # Force minimum PI amount if we can afford it
+            if pi_amount < self.MIN_PI_ORDER:
+                if usdt_available >= (self.MIN_PI_ORDER * current_price * 1.1):  # Add 10% buffer for fees
+                    pi_amount = self.MIN_PI_ORDER
+                else:
+                    logger.info(f"Cannot meet minimum PI order size of {self.MIN_PI_ORDER}")
+                    return 0
+
+            # Round to 1 decimal place to ensure clean amounts
+            final_amount = round(pi_amount, 1)
+            logger.info(f"Calculated buy amount: {final_amount} PI worth {final_amount * current_price} USDT")
+
+            return final_amount
+
         except Exception as e:
             logger.error(f"Error calculating buy amount: {str(e)}")
             return 0
@@ -191,19 +222,27 @@ class TradingBot:
 
     async def initialize(self):
         """Initialize with both PI and USDT balances"""
-        balances = await self.get_balances()
-        self.initial_balance = balances['PI']
+        try:
+            balances = await self.get_balances()
 
-        # Log initial balances
-        logger.info(f"Initialized with balances: {balances['PI']} PI, {balances['USDT']} USDT")
+            # Make sure we get valid balances
+            if balances['PI'] is not None:
+                self.initial_balance = float(balances['PI'])
+            else:
+                self.initial_balance = 0.0  # Set a default if we can't get the balance
 
-        # Send initial balance message
-        await self.send_telegram_message(
-            f"🏦 Initial Balances:\n"
-            f"PI: {balances['PI']:.2f}\n"
-            f"USDT: ${balances['USDT']:.2f}\n\n"
-            f"Ready to trade! 🚀"
-        )
+            logger.info(f"Initialized with balances: PI: {balances['PI']}, USDT: {balances['USDT']}")
+            logger.info(f"Initial PI balance set to: {self.initial_balance}")
+
+            await self.send_telegram_message(
+                f"🏦 Initial Balances:\n"
+                f"PI: {balances['PI']:.4f}\n"
+                f"USDT: ${balances['USDT']:.4f}\n\n"
+                f"Ready to trade! 🚀"
+            )
+        except Exception as e:
+            logger.error(f"Error in initialization: {str(e)}")
+            self.initial_balance = 0.0  # Set default on error
 
     async def stop(self):
         """Stop the trading bot gracefully"""
@@ -256,12 +295,16 @@ class TradingBot:
         """Determine if we should buy"""
         try:
             last_row = df.iloc[-1]
+
+            # More lenient conditions
             conditions = [
-                last_row['RSI'] < self.rsi_oversold,
-                last_row['SMA7'] > last_row['SMA21'],  # Changed from SMA30
-                last_row['Volume_Ratio'] > 1.2
+                last_row['RSI'] < 45,  # Less strict RSI
+                last_row['SMA7'] > last_row['SMA21'],
+                last_row['Volume_Ratio'] > 1.1  # Less strict volume requirement
             ]
-            return sum(conditions) >= 2
+
+            # Only require 1 condition to be met
+            return sum(conditions) >= 1
         except Exception as e:
             logger.error(f"Error in buy signal calculation: {str(e)}")
             return False
@@ -292,27 +335,38 @@ class TradingBot:
         """Execute trade with enhanced USDT management"""
         try:
             sentiment = await self.get_market_sentiment()
-
-            # Get current market price
             ticker = self.exchange.fetch_ticker(self.symbol)
             current_price = ticker['last']
 
             if side == 'buy':
-                # Calculate amount based on available USDT
                 amount = await self.calculate_buy_amount(current_price)
-                if amount <= 0:
-                    await self.send_telegram_message("⚠️ Not enough USDT available for trading!")
+                if amount < self.MIN_PI_ORDER:
+                    logger.info(f"Buy amount {amount} is below minimum {self.MIN_PI_ORDER}, skipping trade")
+                    await self.send_telegram_message(
+                        f"ℹ️ Buy skipped - amount {amount} below minimum {self.MIN_PI_ORDER} PI"
+                    )
+                    return None
+
+                # Check if we have enough USDT
+                usdt_needed = amount * current_price
+                if usdt_needed < self.MIN_USDT_ORDER:
+                    logger.info(f"USDT value {usdt_needed} is below minimum {self.MIN_USDT_ORDER}, skipping trade")
+                    await self.send_telegram_message(
+                        f"ℹ️ Buy skipped - USDT value {usdt_needed:.2f} below minimum {self.MIN_USDT_ORDER} USDT"
+                    )
                     return None
             else:  # sell
-                # Get available PI balance for selling
                 balances = await self.get_balances()
-                amount = min(
-                    balances['PI'],
-                    self.calculate_position_size(signal_strength * (1 + sentiment))
-                )
-                if amount <= 0:
-                    await self.send_telegram_message("⚠️ No PI available to sell!")
+                amount = balances['PI']
+                if amount < self.MIN_PI_ORDER:
+                    logger.info(f"Sell amount {amount} is below minimum {self.MIN_PI_ORDER}, skipping trade")
+                    await self.send_telegram_message(
+                        f"ℹ️ Sell skipped - balance {amount} below minimum {self.MIN_PI_ORDER} PI"
+                    )
                     return None
+
+            # Log the trade attempt
+            logger.info(f"Attempting to {side} {amount} PI at {current_price} USDT")
 
             # Execute the trade
             order = self.exchange.create_order(
@@ -322,6 +376,7 @@ class TradingBot:
                 amount=amount
             )
 
+            # Rest of your execute_trade function...
             # Get fill details
             filled_order = self.exchange.fetch_order(order['id'], self.symbol)
             price = filled_order.get('average') or filled_order.get('price') or current_price
@@ -356,7 +411,7 @@ class TradingBot:
                        f"PI Balance: {new_balances['PI']:.2f}\n" \
                        f"USDT Balance: ${new_balances['USDT']:.2f}"
 
-            await self.send_telegram_message(message, is_important=True)
+            await self.send_telegram_message(message)
 
             # Set trailing stop if buying
             if side == "buy":
@@ -436,38 +491,43 @@ class TradingBot:
         """Check if losses exceed threshold"""
         try:
             current_balance = (await self.get_balances())['PI']
-            self.current_loss = float(self.initial_balance) - float(current_balance)
+
+            # Ensure we have valid numbers before comparison
+            if self.initial_balance is None:
+                self.initial_balance = 0.0
+
+            if current_balance is None:
+                current_balance = 0.0
+
+            # Convert to float to ensure proper comparison
+            initial_balance = float(self.initial_balance)
+            current_balance = float(current_balance)
+
+            self.current_loss = initial_balance - current_balance
+
+            logger.info(
+                f"Loss check - Initial: {initial_balance}, Current: {current_balance}, Loss: {self.current_loss}")
 
             if self.current_loss >= self.loss_threshold:
                 self.trading_allowed = False
                 message = (
                     f"⚠️ Loss threshold reached!\n"
-                    f"Initial balance: {self.initial_balance} PI\n"
-                    f"Current balance: {current_balance} PI\n"
-                    f"Total loss: {self.current_loss} PI\n"
+                    f"Initial balance: {initial_balance:.4f} PI\n"
+                    f"Current balance: {current_balance:.4f} PI\n"
+                    f"Total loss: {self.current_loss:.4f} PI\n"
                     f"Trading halted. Send /resume to continue trading."
                 )
                 await self.send_telegram_message(message)
         except Exception as e:
             logger.error(f"Error checking loss threshold: {str(e)}")
+            # Don't halt trading on error
+            self.current_loss = 0
 
     async def run(self):
-        """Main trading loop with error handling"""
-        await self.initialize()
-        await self.send_telegram_message("🤖 J.A.R.V.I.S Trading System Online! Ready to make some money, boss! 💰")
-
-        last_daily_report = datetime.now()
-
         while self.running:
             try:
-                # Send daily report
-                if datetime.now() - last_daily_report > timedelta(days=1):
-                    await self.send_daily_report()
-                    last_daily_report = datetime.now()
-
-                if not self.trading_allowed:
-                    await asyncio.sleep(60)
-                    continue
+                balances = await self.get_balances()
+                logger.info(f"Current balances - PI: {balances['PI']}, USDT: {balances['USDT']}")
 
                 df = self.get_market_data()
                 if df is None:
@@ -477,18 +537,20 @@ class TradingBot:
                 if df is None:
                     continue
 
-                # Get current balances
-                balances = await self.get_balances()
+                # Check buy conditions FIRST if we have low PI balance
+                if balances['PI'] < self.MIN_PI_ORDER:
+                    buy_signals = self.should_buy(df)
+                    if buy_signals and balances['USDT'] > (self.min_usdt_reserve + self.MIN_USDT_ORDER):
+                        logger.info("Low PI balance - attempting to buy")
+                        await self.execute_trade('buy', buy_signals)
+                        await asyncio.sleep(60)  # Wait a bit after buying
+                        continue
 
-                # Check buy conditions
-                buy_signals = self.should_buy(df)
-                if buy_signals and balances['USDT'] > self.min_usdt_reserve:
-                    await self.execute_trade('buy', buy_signals)
-
-                # Check sell conditions
-                sell_signals = self.should_sell(df)
-                if sell_signals and balances['PI'] > 0:
-                    await self.execute_trade('sell', sell_signals)
+                # Only check sell conditions if we have enough PI to sell
+                if balances['PI'] >= self.MIN_PI_ORDER:
+                    sell_signals = self.should_sell(df)
+                    if sell_signals:
+                        await self.execute_trade('sell', sell_signals)
 
                 await self.check_loss_threshold()
                 await asyncio.sleep(60)
