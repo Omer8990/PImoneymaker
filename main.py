@@ -160,12 +160,25 @@ class TradingBot:
                 amount=amount
             )
 
+            # Fetch the actual order to get the filled price
+            filled_order = self.exchange.fetch_order(order['id'], self.symbol)
+
+            # Calculate average fill price
+            if filled_order['average'] is not None:
+                price = filled_order['average']
+            elif filled_order['price'] is not None:
+                price = filled_order['price']
+            else:
+                # Fallback to current market price
+                ticker = self.exchange.fetch_ticker(self.symbol)
+                price = ticker['last']
+
             emoji = "🚀" if side == "buy" else "💰"
             message = f"{emoji} Trade executed:\n" \
                       f"Side: {side.upper()}\n" \
                       f"Amount: {amount} PI\n" \
-                      f"Price: {order['price']}\n" \
-                      f"Total: ${float(order['price']) * amount:.2f}\n" \
+                      f"Price: {price}\n" \
+                      f"Total: ${float(price) * amount:.2f}\n" \
                       f"Signal Strength: {signal_strength}/3"
 
             await self.send_telegram_message(message)
@@ -236,6 +249,7 @@ async def handle_resume(update, context):
 
 async def main():
     """Main function"""
+    trading_bot = None
     try:
         # Initialize the bot
         trading_bot = TradingBot()
@@ -250,21 +264,52 @@ async def main():
         # Add command handlers
         app.add_handler(CommandHandler("resume", handle_resume))
 
-        # Start the application
-        await app.initialize()
-        await app.start()
-
-        # Start the trading bot
+        # Initialize bot task
         bot_task = asyncio.create_task(trading_bot.run())
 
-        # Run the application
-        await app.run_polling()
+        # Start polling in the background
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+
+        # Wait for the bot task or interruption
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            # Cleanup
+            await trading_bot.stop()
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
 
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
         if trading_bot:
-            await trading_bot.stop()
+            try:
+                await trading_bot.stop()
+                if trading_bot.app:
+                    await trading_bot.app.shutdown()
+            except Exception as cleanup_error:
+                logger.error(f"Error during cleanup: {str(cleanup_error)}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Handle graceful shutdown
+    loop = asyncio.get_event_loop()
+
+
+    def handle_shutdown(sig, frame):
+        loop.stop()
+        logger.info("Received shutdown signal...")
+
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
