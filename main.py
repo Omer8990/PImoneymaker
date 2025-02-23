@@ -60,7 +60,7 @@ class TradingBot:
         # Add USDT management parameters
         self.min_usdt_reserve = 10  # Keep minimum 10 USDT as reserve
         self.max_usdt_per_trade = 100  # Maximum USDT to use per trade
-        self.usdt_position_pct = 0.2  # Use 20% of available USDT per trade
+        self.usdt_position_pct = 0.5  # Currently uses 50% of available USDT
         self.MIN_PI_ORDER = 1.0  # Set to 1 PI minimum
         self.MIN_USDT_ORDER = 5.0  # Set to 5 USDT minimum
 
@@ -72,18 +72,69 @@ class TradingBot:
 
         # Personality messages
         self.profit_messages = [
-            "🎯 Boss! We just scored a sweet profit of {profit:.2f} USDT! Your investment is working hard for you! 💪",
-            "🚀 BOOM! Another win in the books! We're up {profit:.2f} USDT. Keep crushing it! 🏆",
-            "💎 Your diamond hands paid off! Profit secured: {profit:.2f} USDT. This is the way! 🌟",
-            "🎨 Painting the charts green! Just locked in {profit:.2f} USDT profit. You're a natural! 🎨"
+            "Sir, your investment acumen proves formidable once again. Profit secured: {profit:.2f} USDT. 💰",
+            "Excellent play, sir. We've locked in {profit:.2f} USDT. Shall I prepare the celebratory protocols? 🎯",
+            "Mr. Stark would be proud - another successful trade at {profit:.2f} USDT. Your market intuition remains unmatched. ⚡",
+            "Profit secured: {profit:.2f} USDT. I must say, sir, your trading algorithm continues to impress. 🎨"
         ]
 
         self.loss_messages = [
-            "📉 Slight setback, boss. We're down {loss:.2f} USDT. But remember, every dip is a future comeback story! 💪",
-            "🎭 Market's playing hard to get. Lost {loss:.2f} USDT, but we're adjusting our strategy. Stay cool! 😎",
-            "🌊 Small wave against us, -{loss:.2f} USDT. But we're built for the ocean, not just the waves! 🏄‍♂️",
-            "🎮 Level challenge: -{loss:.2f} USDT. But like any good game, we learn and come back stronger! 🎮"
+            "A minor setback of {loss:.2f} USDT, sir. But as you often say, we learn more from our failures than our successes. 📊",
+            "Sir, we've encountered a temporary deviation of {loss:.2f} USDT. Recalibrating strategies as we speak. 🔄",
+            "Down {loss:.2f} USDT. Nothing to worry about, sir - I've seen you pull through worse scenarios. Adjusting parameters. 🛠️",
+            "A slight miscalculation: -{loss:.2f} USDT. Shall I run a diagnostic on our trading parameters? 🔍"
         ]
+
+        self.initialization_messages = [
+            "Systems online, sir. Initial diagnostics complete:\n"
+            "PI: {pi:.4f}\n"
+            "USDT: ${usdt:.4f}\n\n"
+            "Trading protocols activated and ready for your command. 🚀",
+
+            "All systems operational, sir:\n"
+            "PI Balance: {pi:.4f}\n"
+            "USDT Reserve: ${usdt:.4f}\n\n"
+            "The market awaits your expertise. 💫"
+        ]
+
+        self.daily_report_template = (
+            "📊 Daily Performance Analytics 📊\n\n"
+            "Sir, here's your daily trading summary:\n\n"
+            "Transactions Executed: {trades} 🎯\n"
+            "Net Profit/Loss: {profit:.2f} USDT\n"
+            "Peak Performance: {best:.2f} USDT 🏆\n"
+            "Learning Opportunity: {worst:.2f} USDT 📉\n\n"
+            "Current Portfolio Status:\n"
+            "PI: {pi:.2f}\n"
+            "USDT: ${usdt:.2f}\n"
+            "Initial PI Holdings: {initial:.2f}\n\n"
+            "{performance_comment}"
+        )
+
+        self.performance_comments = {
+            'positive': [
+                "Excellent day, sir. The algorithms performed admirably. 🌟",
+                "Another successful day in the books. Your strategy proves effective once again. 🚀",
+                "The numbers speak for themselves, sir. Shall I prepare for tomorrow's opportunities? 💫"
+            ],
+            'negative': [
+                "A challenging day, sir, but nothing we haven't handled before. Recalibrating for tomorrow. 💪",
+                "Today's market proved... interesting. But as you say, sir - we learn and adapt. 🔄",
+                "Perhaps a slight adjustment to our parameters might be in order for tomorrow, sir? 🛠️"
+            ]
+        }
+
+        self.trade_details_template = (
+            "\n\n📊 Trade Analysis:\n"
+            "{direction} {side.upper()} (Position Size: {position_pct:.0f}%)\n"
+            "Amount: {amount:.2f} PI\n"
+            "Market Rate: ${price:.4f}\n"
+            "Confidence Index: {signal_strength}/3\n"
+            "Market Sentiment: {sentiment}\n\n"
+            "Updated Holdings:\n"
+            "PI: {pi_balance:.2f}\n"
+            "USDT: ${usdt_balance:.2f}"
+        )
 
     async def get_market_sentiment(self):
         """Analyze overall market sentiment"""
@@ -131,21 +182,27 @@ class TradingBot:
             logger.error(f"Error sending Telegram message: {str(e)}")
 
     async def send_daily_report(self):
-        """Enhanced daily report with USDT balance"""
+        """Enhanced daily report with JARVIS-style messaging"""
         try:
             balances = await self.get_balances()
-            report = (
-                f"📊 Daily Trading Report 📊\n\n"
-                f"Trades Made: {self.daily_stats['trades']} 🎯\n"
-                f"Total Profit/Loss: {self.daily_stats['profit']:.2f} USDT\n"
-                f"Best Trade: {self.daily_stats['best_trade']:.2f} USDT 🏆\n"
-                f"Worst Trade: {self.daily_stats['worst_trade']:.2f} USDT 📉\n\n"
-                f"Current Balances:\n"
-                f"PI: {balances['PI']:.2f}\n"
-                f"USDT: ${balances['USDT']:.2f}\n"
-                f"Initial PI Balance: {self.initial_balance:.2f}\n\n"
-                f"{'🌟 Profitable Day! Keep it up! 🚀' if self.daily_stats['profit'] > 0 else '💪 Tomorrow is a new opportunity! 🌅'}"
+
+            # Determine performance comment
+            comment_list = (self.performance_comments['positive']
+                            if self.daily_stats['profit'] > 0
+                            else self.performance_comments['negative'])
+            performance_comment = random.choice(comment_list)
+
+            report = self.daily_report_template.format(
+                trades=self.daily_stats['trades'],
+                profit=self.daily_stats['profit'],
+                best=self.daily_stats['best_trade'],
+                worst=self.daily_stats['worst_trade'],
+                pi=balances['PI'],
+                usdt=balances['USDT'],
+                initial=self.initial_balance,
+                performance_comment=performance_comment
             )
+
             await self.send_telegram_message(report, is_important=True)
 
             # Reset daily stats
@@ -221,28 +278,23 @@ class TradingBot:
             logger.error(f"Error sending Telegram message: {str(e)}")
 
     async def initialize(self):
-        """Initialize with both PI and USDT balances"""
+        """Initialize with JARVIS-style welcome message"""
         try:
             balances = await self.get_balances()
-
-            # Make sure we get valid balances
             if balances['PI'] is not None:
                 self.initial_balance = float(balances['PI'])
             else:
-                self.initial_balance = 0.0  # Set a default if we can't get the balance
+                self.initial_balance = 0.0
 
-            logger.info(f"Initialized with balances: PI: {balances['PI']}, USDT: {balances['USDT']}")
-            logger.info(f"Initial PI balance set to: {self.initial_balance}")
-
-            await self.send_telegram_message(
-                f"🏦 Initial Balances:\n"
-                f"PI: {balances['PI']:.4f}\n"
-                f"USDT: ${balances['USDT']:.4f}\n\n"
-                f"Ready to trade! 🚀"
+            welcome_message = random.choice(self.initialization_messages).format(
+                pi=balances['PI'],
+                usdt=balances['USDT']
             )
+
+            await self.send_telegram_message(welcome_message)
         except Exception as e:
             logger.error(f"Error in initialization: {str(e)}")
-            self.initial_balance = 0.0  # Set default on error
+            self.initial_balance = 0.0
 
     async def stop(self):
         """Stop the trading bot gracefully"""
@@ -265,64 +317,30 @@ class TradingBot:
             logger.error(f"Error fetching market data: {str(e)}")
             return None
 
-    def calculate_signals(self, df):
-        """Calculate technical indicators"""
-        try:
-            # Moving averages
-            df['SMA7'] = df['close'].rolling(window=self.short_window).mean()
-            df['SMA21'] = df['close'].rolling(window=self.long_window).mean()
-
-            # RSI calculation
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-            rs = gain / loss
-            df['RSI'] = 100 - (100 / (1 + rs))
-
-            # Volume analysis
-            df['Volume_MA'] = df['volume'].rolling(window=20).mean()
-            df['Volume_Ratio'] = df['volume'] / df['Volume_MA']
-
-            # Make sure all values are numeric
-            df = df.fillna(0)
-
-            return df
-        except Exception as e:
-            logger.error(f"Error calculating signals: {str(e)}")
-            return None
-
     def should_buy(self, df):
-        """Determine if we should buy"""
-        try:
-            last_row = df.iloc[-1]
+        last_row = df.iloc[-1]
 
-            # More lenient conditions
-            conditions = [
-                last_row['RSI'] < 45,  # Less strict RSI
-                last_row['SMA7'] > last_row['SMA21'],
-                last_row['Volume_Ratio'] > 1.1  # Less strict volume requirement
-            ]
+        # Add more sophisticated conditions
+        conditions = [
+            last_row['RSI'] < 30,  # More conservative
+            last_row['SMA7'] > last_row['SMA21'],
+            last_row['Volume_Ratio'] > 1.5,  # Higher volume requirement
+            last_row['close'] < last_row['SMA21'],  # Below moving average
+            last_row['ROC'] < -2  # Rate of change showing downward momentum
+        ]
 
-            # Only require 1 condition to be met
-            return sum(conditions) >= 1
-        except Exception as e:
-            logger.error(f"Error in buy signal calculation: {str(e)}")
-            return False
+        # Require more conditions to be met
+        return sum(conditions) >= 3
 
     def should_sell(self, df):
-        """Determine if we should sell"""
-        try:
-            last_row = df.iloc[-1]
-            conditions = [
-                last_row['RSI'] > self.rsi_overbought,
-                last_row['SMA7'] < last_row['SMA21'],  # Changed from SMA30
-                last_row['Volume_Ratio'] < 0.8
-            ]
-            return sum(conditions) >= 2
-        except Exception as e:
-            logger.error(f"Error in sell signal calculation: {str(e)}")
-            return False
-
+        last_row = df.iloc[-1]
+        conditions = [
+            last_row['RSI'] > 70,  # More aggressive profit taking
+            last_row['SMA7'] < last_row['SMA21'],
+            last_row['Volume_Ratio'] > 1.2,  # Good volume for selling
+            last_row['ROC'] > 3  # Strong upward momentum
+        ]
+        return sum(conditions) >= 2
 
     def calculate_position_size(self, signal_strength):
         """Calculate position size based on signal strength"""
@@ -332,14 +350,25 @@ class TradingBot:
         return min(base_size * signal_strength, self.max_position_size)
 
     async def execute_trade(self, side, signal_strength):
-        """Execute trade with enhanced USDT management"""
+        """Execute trade with enhanced USDT management and partial position taking"""
         try:
             sentiment = await self.get_market_sentiment()
             ticker = self.exchange.fetch_ticker(self.symbol)
             current_price = ticker['last']
 
+            # Determine position size based on signal strength
+            position_sizes = {
+                3: 0.8,  # Strong signal: 80% of available balance
+                2: 0.5,  # Medium signal: 50% of available balance
+                1: 0.3  # Weak signal: 30% of available balance
+            }
+            position_percent = position_sizes.get(signal_strength, 0.3)  # Default to 30% if invalid strength
+
             if side == 'buy':
-                amount = await self.calculate_buy_amount(current_price)
+                # Calculate buy amount with position sizing
+                full_amount = await self.calculate_buy_amount(current_price)
+                amount = full_amount * position_percent
+
                 if amount < self.MIN_PI_ORDER:
                     logger.info(f"Buy amount {amount} is below minimum {self.MIN_PI_ORDER}, skipping trade")
                     await self.send_telegram_message(
@@ -357,16 +386,19 @@ class TradingBot:
                     return None
             else:  # sell
                 balances = await self.get_balances()
-                amount = balances['PI']
+                full_amount = balances['PI']
+                amount = full_amount * position_percent
+
                 if amount < self.MIN_PI_ORDER:
                     logger.info(f"Sell amount {amount} is below minimum {self.MIN_PI_ORDER}, skipping trade")
                     await self.send_telegram_message(
-                        f"ℹ️ Sell skipped - balance {amount} below minimum {self.MIN_PI_ORDER} PI"
+                        f"ℹ️ Sell skipped - amount {amount} below minimum {self.MIN_PI_ORDER} PI"
                     )
                     return None
 
             # Log the trade attempt
-            logger.info(f"Attempting to {side} {amount} PI at {current_price} USDT")
+            logger.info(
+                f"Attempting to {side} {amount:.2f} PI ({position_percent * 100:.0f}% position) at {current_price} USDT")
 
             # Execute the trade
             order = self.exchange.create_order(
@@ -376,7 +408,6 @@ class TradingBot:
                 amount=amount
             )
 
-            # Rest of your execute_trade function...
             # Get fill details
             filled_order = self.exchange.fetch_order(order['id'], self.symbol)
             price = filled_order.get('average') or filled_order.get('price') or current_price
@@ -400,9 +431,9 @@ class TradingBot:
             else:
                 message = random.choice(self.loss_messages).format(loss=abs(profit))
 
-            # Add enhanced trade details
+            # Add enhanced trade details with position size information
             message += f"\n\n📊 Trade Details:\n" \
-                       f"{'📈' if side == 'buy' else '📉'} {side.upper()}\n" \
+                       f"{'📈' if side == 'buy' else '📉'} {side.upper()} ({position_percent * 100:.0f}% position)\n" \
                        f"💰 Amount: {amount:.2f} PI\n" \
                        f"💵 Price: ${price:.4f}\n" \
                        f"🎯 Signal Strength: {signal_strength}/3\n" \
