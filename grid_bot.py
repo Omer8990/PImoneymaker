@@ -33,20 +33,20 @@ class GridTradingBot:
         self.running = True
 
         # Grid trading parameters
-        self.grid_levels = 10
-        self.grid_spread = 0.02  # 2% spread
+        self.grid_levels = 15
+        self.grid_spread = 0.05  # 5% spread
         self.order_amount = 5
         self.min_profit_per_grid = 0.005
         self.active_orders = {}
 
         # Remove hardcoded price constraints and add dynamic ones
-        self.price_buffer = 0.002  # 0.2% buffer for price movements
+        self.price_buffer = 0.001  # 0.2% buffer for price movements
         self.last_price_update = None
-        self.price_update_threshold = 0.01  # 1% price change triggers update
+        self.price_update_threshold = 0.02 # 2% price change triggers update
 
         # Risk management parameters
-        self.max_position = 100
-        self.min_usdt_reserve = 15
+        self.max_position = 200
+        self.min_usdt_reserve = 10
         self.min_order_size = {
             'PI': 1.0,
             'USDT': 5.0
@@ -499,4 +499,3 @@ if __name__ == "__main__":
             logger.error(f"Fatal error: {str(e)}")
 
     asyncio.run(run_bot())
-
