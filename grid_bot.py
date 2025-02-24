@@ -33,23 +33,23 @@ class GridTradingBot:
         self.running = True
 
         # Grid trading parameters
-        self.grid_levels = 15
-        self.grid_spread = 0.05  # 5% spread
+        self.grid_levels = 8
+        self.grid_spread = 0.12  # 5% spread
         self.order_amount = 5
         self.min_profit_per_grid = 0.005
         self.active_orders = {}
 
         # Remove hardcoded price constraints and add dynamic ones
-        self.price_buffer = 0.001  # 0.2% buffer for price movements
+        self.price_buffer = 0.0005  # Can reduce to 0.0005 for more frequent trades
+        self.price_update_threshold = 0.01  # Can reduce to 0.01 for more frequent grid updates
         self.last_price_update = None
-        self.price_update_threshold = 0.02 # 2% price change triggers update
 
         # Risk management parameters
-        self.max_position = 200
-        self.min_usdt_reserve = 10
+        self.max_position = 300
+        self.min_usdt_reserve = 5
         self.min_order_size = {
-            'PI': 1.0,
-            'USDT': 5.0
+            'PI': 3.0,
+            'USDT': 10.0
         }
 
         # Performance tracking
@@ -80,41 +80,116 @@ class GridTradingBot:
         )
 
     async def calculate_grid_prices(self):
-        """Calculate grid price levels with dynamic price range"""
+        """Calculate grid price levels with improved price limit handling"""
         try:
-            price_range = await self.get_current_price_range()
-            if not price_range:
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            if not ticker or 'last' not in ticker:
+                logger.error("Failed to get current price from ticker")
                 return None
 
-            lower_price = price_range['lower']
-            upper_price = price_range['upper']
+            current_price = ticker['last']
 
-            # Calculate price levels
+            # Get exchange info to determine exact price limits
+            exchange_info = self.exchange.load_markets()
+            symbol_info = exchange_info.get(self.symbol, {})
+
+            # Set strict price limits based on current price
+            # Assuming 5% maximum deviation for safety
+            price_limit_range = 0.05
+            min_price = current_price * (1 - price_limit_range)
+            max_price = current_price * (1 + price_limit_range)
+
+            # Calculate grid points around current price
             grid_prices = []
-            price_step = (upper_price - lower_price) / self.grid_levels
 
-            for i in range(self.grid_levels + 1):
-                price = lower_price + (price_step * i)
+            # Calculate step size based on grid levels
+            total_range = max_price - min_price
+            step_size = total_range / (self.grid_levels - 1)
+
+            # Generate base grid prices
+            for i in range(self.grid_levels):
+                price = min_price + (step_size * i)
+                # Round to 4 decimal places to match exchange precision
+                price = round(price, 4)
                 grid_prices.append(price)
 
-            return grid_prices
+            # Adjust prices near boundaries
+            validated_prices = []
+            for price in grid_prices:
+                # Add additional validation for sell orders
+                if price < current_price:  # Buy orders
+                    validated_prices.append(price)
+                else:  # Sell orders
+                    # Ensure sell orders are above minimum sell price
+                    if price >= 1.615:  # Based on observed limits
+                        validated_prices.append(price)
+
+            # Remove duplicates and sort
+            validated_prices = sorted(list(set(validated_prices)))
+
+            # Ensure we have enough valid price levels
+            if len(validated_prices) < 3:
+                logger.warning("Not enough valid price levels generated")
+                return None
+
+            return validated_prices
+
         except Exception as e:
             logger.error(f"Error calculating grid prices: {str(e)}")
             return None
 
     async def get_current_price_range(self):
-        """Get current price range based on market conditions"""
+        """Get current price range based on market conditions with safe null handling"""
         try:
+            # Get current price
             ticker = self.exchange.fetch_ticker(self.symbol)
-            current_price = ticker['last']
+            if not ticker or 'last' not in ticker:
+                logger.error("Failed to get current price from ticker")
+                return None
 
-            # Calculate dynamic price range
+            current_price = ticker['last']
+            if not current_price:
+                logger.error("Current price is None")
+                return None
+
+            # Calculate initial price range
             lower_price = current_price * (1 - self.grid_spread / 2)
             upper_price = current_price * (1 + self.grid_spread / 2)
 
-            # Add small buffer to prevent immediate invalidation
-            lower_price = lower_price * (1 - self.price_buffer)
-            upper_price = upper_price * (1 + self.price_buffer)
+            try:
+                # Safely get exchange limits
+                exchange_info = self.exchange.load_markets()
+                symbol_info = exchange_info.get(self.symbol, {})
+                limits = symbol_info.get('limits', {})
+                price_limits = limits.get('price', {})
+
+                # Use safe default values if limits aren't available
+                min_price = price_limits.get('min')
+                max_price = price_limits.get('max')
+
+                # Only apply limits if they exist
+                if min_price is not None:
+                    lower_price = max(lower_price, float(min_price))
+                if max_price is not None:
+                    upper_price = min(upper_price, float(max_price))
+            except Exception as e:
+                logger.warning(f"Could not fetch exchange limits, using calculated range: {str(e)}")
+                # Continue with calculated range if exchange limits unavailable
+
+            # Ensure we have valid prices after all calculations
+            if lower_price <= 0 or upper_price <= 0 or lower_price >= upper_price:
+                logger.error(f"Invalid price range calculated: lower={lower_price}, upper={upper_price}")
+                return None
+
+            # Add buffer proportional to the price range
+            buffer_amount = (upper_price - lower_price) * self.price_buffer
+            lower_price = lower_price + buffer_amount
+            upper_price = upper_price - buffer_amount
+
+            # Final validation
+            if lower_price >= upper_price:
+                logger.error("Price range invalid after adding buffer")
+                return None
 
             return {
                 'current': current_price,
@@ -175,7 +250,7 @@ class GridTradingBot:
             return False
 
     async def setup_grid(self):
-        """Initialize the grid trading setup with optimal order sizes"""
+        """Enhanced grid setup with better error handling"""
         try:
             # Calculate optimal order size
             optimal_order_size = await self.calculate_optimal_order_sizes()
@@ -183,41 +258,45 @@ class GridTradingBot:
             # Get grid prices
             grid_prices = await self.calculate_grid_prices()
             if not grid_prices:
+                logger.error("Failed to calculate grid prices")
                 return
 
             # Cancel existing orders
             await self.cancel_all_orders()
 
-            # Track total committed amounts
+            # Track committed amounts
             total_usdt_committed = 0
             total_pi_committed = 0
 
-            # Place grid orders
-            for i in range(len(grid_prices) - 1):
-                buy_price = grid_prices[i]
-                sell_price = grid_prices[i + 1]
+            # Get current price for reference
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            current_price = ticker['last']
 
-                # Calculate USDT needed for this buy order
-                usdt_needed = buy_price * optimal_order_size
+            # Place grid orders
+            for i, price in enumerate(grid_prices):
+                # Determine order type based on price relative to current price
+                order_type = 'buy' if price < current_price else 'sell'
+
+                # Calculate required amounts
+                usdt_needed = price * optimal_order_size
                 pi_needed = optimal_order_size
 
+                # Check balances
                 balances = await self.get_balances()
                 usdt_available = balances['USDT'] - self.min_usdt_reserve - total_usdt_committed
                 pi_available = balances['PI'] - total_pi_committed
 
-                # Place buy order if enough USDT
-                if usdt_available >= usdt_needed:
-                    buy_order = await self.place_order('buy', buy_price, optimal_order_size, i)  # Added level
-                    if buy_order:
+                # Place order if enough balance
+                if order_type == 'buy' and usdt_available >= usdt_needed:
+                    order = await self.place_order('buy', price, optimal_order_size, i)
+                    if order:
                         total_usdt_committed += usdt_needed
-
-                # Place sell order if enough PI
-                if pi_available >= pi_needed:
-                    sell_order = await self.place_order('sell', sell_price, optimal_order_size, i)  # Added level
-                    if sell_order:
+                elif order_type == 'sell' and pi_available >= pi_needed:
+                    order = await self.place_order('sell', price, optimal_order_size, i)
+                    if order:
                         total_pi_committed += pi_needed
 
-            # Log utilization statistics
+            # Log setup completion
             logger.info(f"Grid setup complete. Using {total_usdt_committed:.2f} USDT and {total_pi_committed:.2f} PI")
             await self.send_telegram_message(
                 f"📊 Grid Utilization:\n"
@@ -376,20 +455,32 @@ class GridTradingBot:
             logger.error(f"Error placing counter order: {str(e)}")
 
     async def place_order(self, order_type, price, amount, level=None):
-        """Updated place_order without hardcoded price limits"""
+        """Place order with improved price limit handling"""
         try:
-            current_range = await self.get_current_price_range()
-            if not current_range:
-                return None
+            # Round price to 4 decimal places
+            price = round(price, 4)
 
-            # Validate price is within current market range
-            if order_type == 'sell' and price < current_range['lower']:
-                logger.warning(f"Skipping sell order: price {price} below current range")
-                return None
-            if order_type == 'buy' and price > current_range['upper']:
-                logger.warning(f"Skipping buy order: price {price} above current range")
-                return None
+            # Get current market price
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            current_price = ticker['last']
 
+            # Add specific price validations based on order type
+            if order_type == 'sell':
+                min_sell_price = 1.615  # Based on observed limits
+                if price < min_sell_price:
+                    logger.warning(f"Skipping sell order: price {price} below minimum sell price {min_sell_price}")
+                    return None
+
+            elif order_type == 'buy':
+                max_buy_price = current_price * 1.03  # Maximum 3% above current price
+                if price > max_buy_price:
+                    logger.warning(f"Skipping buy order: price {price} above maximum buy price {max_buy_price}")
+                    return None
+
+            # Add small delay between orders
+            await asyncio.sleep(0.5)
+
+            # Place the order
             order = None
             if order_type == 'buy':
                 order = self.exchange.create_limit_buy_order(self.symbol, amount, price)
@@ -402,12 +493,16 @@ class GridTradingBot:
                     'type': order_type,
                     'level': level
                 }
+                logger.info(f"Successfully placed {order_type} order at price {price}")
 
             return order
-        except Exception as e:
-            logger.error(f"Error placing {order_type} order at price {price}: {str(e)}")
-            return None
 
+        except Exception as e:
+            if "price limit" in str(e).lower():
+                logger.warning(f"Price limit reached for {order_type} order at price {price}")
+            else:
+                logger.error(f"Error placing {order_type} order at price {price}: {str(e)}")
+            return None
 
     async def get_balances(self):
         """Get both PI and USDT balances"""
